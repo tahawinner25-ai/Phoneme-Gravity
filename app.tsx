@@ -2,21 +2,15 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Orbit, Compass, Mic, Volume2, Sparkles, Send, Loader2, AlertTriangle, ArrowLeft, RefreshCw, Trophy, HelpCircle, Shield, Layers, HelpCircle as HelpIcon, Play, Radio, VolumeX } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
-interface PhonemeOrbitProps {
-  user: any;
-  onBack: () => void;
-  selectedLang: string;
-}
-
 interface PhonemeNode {
   id: string;
   char: string;
   ipa: string;
-  status: 'undecided' | 'stable' | 'unstable' | 'omitted';
-  angle: number; // Current orbital angle
-  speed: number; // Orbit speed
-  radius: number; // Distance from center
-  errorType?: 'inversion' | 'substitution' | 'omission' | null;
+  angle: number;
+  radius: number;
+  speed: number;
+  status: 'stable' | 'unstable' | 'omitted' | 'undecided';
+  errorType?: string;
 }
 
 interface PresetWord {
@@ -160,6 +154,20 @@ const PRESET_WORDS: PresetWord[] = [
   }
 ];
 
+const ACCENTS = [
+  { id: 'marocain', name: 'Marocain', flag: '🇲🇦', region: 'North Africa' },
+  { id: 'senegalais', name: 'Sénégalais', flag: '🇸🇳', region: 'West Africa' },
+  { id: 'congolais', name: 'Congolais', flag: '🇨🇬', region: 'Central Africa' },
+  { id: 'kenyan', name: 'Kényan', flag: '🇰🇪', region: 'East Africa' },
+  { id: 'sud_africain', name: 'Sud-Africain', flag: '🇿🇦', region: 'South Africa' }
+];
+
+interface PhonemeOrbitProps {
+  user: any;
+  onBack: () => void;
+  selectedLang: string;
+}
+
 export default function PhonemeOrbit({ user, onBack, selectedLang }: PhonemeOrbitProps) {
   const [selectedPresetIdx, setSelectedPresetIdx] = useState(0);
   const [targetWord, setTargetWord] = useState(PRESET_WORDS[0].word);
@@ -173,187 +181,65 @@ export default function PhonemeOrbit({ user, onBack, selectedLang }: PhonemeOrbi
   const [isCapturing, setIsCapturing] = useState(false);
   const [speechTranscript, setSpeechTranscript] = useState("");
   const [simulatedPronunciation, setSimulatedPronunciation] = useState("");
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
   
-  // Orbit Visual Nodes State
   const [phonemes, setPhonemes] = useState<PhonemeNode[]>([]);
-  const animationFrameRef = useRef<number | null>(null);
-  
-  // Calibration Analysis Results
-  const [analysisResult, setAnalysisResult] = useState<any | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState<any>(null);
   const [errorLogs, setErrorLogs] = useState<string[]>([]);
+  
+  // TTS State
   const [isSpeakingTts, setIsSpeakingTts] = useState(false);
   const [ttsAudioUrl, setTtsAudioUrl] = useState<string | null>(null);
 
-  // Initialize phonetic orbital nodes
-  useEffect(() => {
-    const currentPreset = PRESET_WORDS[selectedPresetIdx];
-    if (!currentPreset) return;
-    
-    // Automatically bind calibration family to the physics models
-    if (currentPreset.family) {
-      setCalibrationMode(currentPreset.family);
-    } else {
-      setCalibrationMode('universal');
-    }
+  const animationFrameRef = useRef<number | null>(null);
 
-    // Map preset syllables/phonemes into circles around gravity core
-    const nodes: PhonemeNode[] = currentPreset.phonemes.map((ph, idx) => {
-      const stepAngle = (360 / currentPreset.phonemes.length) * idx;
-      // Alternate radius shells to avoid overlap
-      const radius = 90 + (idx % 3) * 35;
+  // Initialize satellites on word changes
+  useEffect(() => {
+    const active = PRESET_WORDS[selectedPresetIdx];
+    setTargetWord(active.word);
+    setCalibrationMode(active.family);
+    
+    // Decompose into orbit positions (staggered angular distribution)
+    const count = active.phonemes.length;
+    const initialNodes: PhonemeNode[] = active.phonemes.map((ph, idx) => {
+      const angle = (idx * (360 / count));
+      // Ring spacing (90px for high frequency, 130px for med, 170px for outer)
+      const ring = 100 + (idx % 3) * 35; 
       return {
-        id: `ph-${idx}`,
+        id: `node-${idx}`,
         char: ph.char,
         ipa: ph.ipa,
-        status: 'undecided',
-        angle: stepAngle,
-        speed: 0.4 + (idx % 2) * 0.2, // Base speed of rotation
-        radius: radius,
+        angle,
+        radius: ring,
+        speed: 0.15 + Math.random() * 0.1,
+        status: 'undecided'
       };
     });
-    setPhonemes(nodes);
+    setPhonemes(initialNodes);
     setAnalysisResult(null);
     setSpeechTranscript("");
     setSimulatedPronunciation("");
-    setErrorLogs([]);
   }, [selectedPresetIdx]);
 
-  // Handle custom word generation via Gemini 3.5 Flash
-  const handleCustomWordCompile = async () => {
-    if (!customWordInput.trim()) return;
-    setIsAnalyzing(true);
-    try {
-      const prompt = `You are a world-class speech-language pathologist and phonologist.
-The user wants to practice a custom word for the Phoneme Orbit training: "${customWordInput}".
-Analyze this word and decompose it into its sequential phonetic segments (phonemes).
-
-Determine which linguistic or phonetic family calibration represents it best:
-- "bantu": pre-nasalized pairs, implosives (Swahili, Zulu)
-- "afroasiatic": dental/velar/pharyngeal fricatives, sibilants (Arabic, Darija, Berber)
-- "niger_congo": nasalized vowels, liquid glides, tone-related vocalizations (Yoruba, Wolof, West African French)
-- "universal": standard English/French phonology
-
-Return ONLY a valid JSON object matching this structure (do not wrap in markdown code blocks):
-{
-  "word": "${customWordInput.toLowerCase()}",
-  "ipa": "Full IPA representation, e.g., /krɔkɔdil/",
-  "lang": "English",
-  "difficulty": "Easy | Medium | High",
-  "phonemes": [
-    { "char": "c", "ipa": "/k/" },
-    { "char": "r", "ipa": "/r/" }
-  ],
-  "region": "Custom Word Exploration",
-  "description": "Linguistic advice on this word's typical phonetic challenges.",
-  "family": "bantu | afroasiatic | niger_congo | universal"
-}`;
-
-      const res = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt })
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        let cleanText = data.text.trim();
-        if (cleanText.startsWith('```json')) cleanText = cleanText.replace(/```json/gi, '').replace(/```/gi, '').trim();
-        if (cleanText.startsWith('```')) cleanText = cleanText.replace(/```/g, '').trim();
-        
-        const parsed = JSON.parse(cleanText);
-        if (parsed.word && parsed.phonemes) {
-          // Temporarily inject custom preset
-          const customPreset = {
-            word: parsed.word,
-            ipa: parsed.ipa || `/${parsed.word}/`,
-            lang: parsed.lang || "English",
-            difficulty: parsed.difficulty || "Medium",
-            phonemes: parsed.phonemes,
-            region: parsed.region || "Custom",
-            description: parsed.description || "Pronounce carefully to align the orbital gravity field.",
-            family: (parsed.family || "universal") as 'bantu' | 'afroasiatic' | 'niger_congo' | 'universal'
-          };
-          
-          // Force update states
-          setTargetWord(parsed.word);
-          const nodes: PhonemeNode[] = customPreset.phonemes.map((ph: any, idx: number) => {
-            const stepAngle = (360 / customPreset.phonemes.length) * idx;
-            const radius = 90 + (idx % 3) * 35;
-            return {
-              id: `ph-custom-${idx}`,
-              char: ph.char,
-              ipa: ph.ipa,
-              status: 'undecided',
-              angle: stepAngle,
-              speed: 0.4 + (idx % 2) * 0.2,
-              radius: radius,
-            };
-          });
-          setPhonemes(nodes);
-          setAnalysisResult(null);
-          setSpeechTranscript("");
-          setSimulatedPronunciation("");
-          setErrorLogs([`Custom Word "${parsed.word}" mapped into ${nodes.length} orbital satellites with ${customPreset.family.toUpperCase()} calibration.`]);
-          
-          // Save parameters
-          PRESET_WORDS.push(customPreset);
-          setSelectedPresetIdx(PRESET_WORDS.length - 1);
-          setCustomWordMode(false);
-        }
-      }
-    } catch (err) {
-      console.error(err);
-      setErrorLogs(prev => [...prev, "❌ Failed to map custom word. Using rules fallback instead."]);
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  // Live Physics Engine loop: Rotates the satellites in real-time
+  // Rotational Orbital Animation Loop
   useEffect(() => {
-    const updatePhysics = () => {
+    const updateOrbit = () => {
       setPhonemes(prevNodes => 
         prevNodes.map(node => {
-          // If stable (docked), spiral slowly into the center
-          if (node.status === 'stable') {
-            const nextRadius = Math.max(25, node.radius - 2.5);
-            // Spin much faster as it gets sucked into the gravity core (Kepler's Law)
-            const nextSpeed = node.speed * 1.5;
-            return {
-              ...node,
-              angle: (node.angle + nextSpeed) % 360,
-              radius: nextRadius
-            };
-          }
-          // If omitted, fly wildly away into outer space
-          if (node.status === 'omitted') {
-            return {
-              ...node,
-              angle: (node.angle + node.speed * 0.5) % 360,
-              radius: node.radius + 4 // centrifugal escape
-            };
-          }
-          // If unstable (friction wobble), oscillate speed and radius wildly
-          if (node.status === 'unstable') {
-            const wobble = Math.sin(Date.now() / 150) * 8;
-            return {
-              ...node,
-              angle: (node.angle + node.speed * 3.5) % 360, // Speed up with friction
-              radius: node.radius + wobble
-            };
-          }
-          // Normal state: steady circle
+          let speedFactor = 1.0;
+          if (node.status === 'unstable') speedFactor = 2.4; // unstable satellites jitter & accelerate
+          if (node.status === 'stable') speedFactor = 0.4;  // locked nodes slow down
+          
           return {
             ...node,
-            angle: (node.angle + node.speed) % 360
+            angle: (node.angle + node.speed * speedFactor) % 360
           };
         })
       );
-      animationFrameRef.current = requestAnimationFrame(updatePhysics);
+      animationFrameRef.current = requestAnimationFrame(updateOrbit);
     };
-    
-    animationFrameRef.current = requestAnimationFrame(updatePhysics);
+
+    animationFrameRef.current = requestAnimationFrame(updateOrbit);
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
@@ -361,9 +247,9 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
 
   // Web Speech API Microphone Capture
   const startRecording = () => {
+    if (isCapturing) return;
     setIsCapturing(true);
     setSpeechTranscript("");
-    setErrorLogs(prev => [...prev, "📡 Calibrating microphone array. Standby..."]);
     
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -376,18 +262,17 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
       const recognition = new SpeechRecognition();
       recognition.continuous = false;
       recognition.interimResults = false;
-      recognition.lang = selectedLang === "French" ? "fr-FR" : "en-US";
+      recognition.lang = PRESET_WORDS[selectedPresetIdx].lang === 'French' ? 'fr-FR' : 'en-US';
 
-      recognition.onresult = (event: any) => {
-        const resultText = event.results[0][0].transcript;
+      recognition.onresult = (e: any) => {
+        const resultText = e.results[0][0].transcript;
         setSpeechTranscript(resultText);
-        setSimulatedPronunciation(resultText);
-        setErrorLogs(prev => [...prev, `🎙️ Captured spoken signal: "${resultText}"`]);
+        setIsCapturing(false);
         handleAnalyzeSpeech(resultText);
       };
 
-      recognition.onerror = (e: any) => {
-        setErrorLogs(prev => [...prev, `❌ Mic Input error: ${e.error}`]);
+      recognition.onerror = (err: any) => {
+        setErrorLogs(prev => [...prev, `❌ Speech Capture Error: ${err.error}`]);
         setIsCapturing(false);
       };
 
@@ -402,61 +287,46 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
     }
   };
 
-  // Core Phonological Supervision & Orbit State Calibration
   const handleAnalyzeSpeech = async (spokenText: string) => {
     if (!spokenText.trim()) return;
     setIsAnalyzing(true);
-    const activePreset = PRESET_WORDS[selectedPresetIdx];
     
     try {
-      setErrorLogs(prev => [...prev, `⚡ Sending signal to Gemini Phonetic Evaluator...`]);
-      const response = await fetch('/api/superviseur-phonologique', {
+      const active = PRESET_WORDS[selectedPresetIdx];
+      
+      const response = await fetch('/api/gemini-interactions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          motCible: activePreset.word,
-          motPrononce: spokenText,
-          language: activePreset.lang
+          action: 'analyze_dyslexia',
+          target: active.word,
+          spoken: spokenText,
+          language: active.lang
         })
       });
 
       if (response.ok) {
-        const data = await response.json();
-        setAnalysisResult(data);
-        setErrorLogs(prev => [
-          ...prev, 
-          `✅ Gemini Analysis: Levenshtein distance ${data.distanceLeven}, Syllable score ${data.scoreSyllabique}%`,
-          `🧬 Phonetic deviation flagged: ${data.analyse.typeErreur || "None"}`
-        ]);
-
-        // Calibrate orbital physics states based on specific segments
-        const errors = data.erreursDetectees || [];
-        const spokenLower = spokenText.toLowerCase();
-
+        const result = await response.json();
+        setAnalysisResult(result);
+        
+        // Map the orbital satellite gravity adjustments based on phonetic deviations
+        const analyzedPhonemes = result.phonemes || [];
         setPhonemes(prevNodes => 
-          prevNodes.map(node => {
-            // Find if this node is part of the errors detected
-            const isError = errors.find((err: any) => 
-              err.segmentCible.toLowerCase().includes(node.char.toLowerCase()) ||
-              node.char.toLowerCase().includes(err.segmentCible.toLowerCase())
-            );
-
-            if (isError) {
-              if (isError.type === 'inversion') {
-                return { ...node, status: 'unstable', errorType: 'inversion' };
-              } else if (isError.type === 'omission') {
-                return { ...node, status: 'omitted', errorType: 'omission' };
-              } else {
-                return { ...node, status: 'unstable', errorType: 'substitution' };
-              }
+          prevNodes.map((node, index) => {
+            const match = analyzedPhonemes[index];
+            if (match) {
+              return {
+                ...node,
+                status: match.deviation ? 'unstable' : 'stable',
+                errorType: match.deviationType || undefined,
+                // pull closer if stable, push outward if unstable
+                radius: match.deviation ? 175 : 95
+              };
             }
-
-            // If the whole word is a match or this specific segment was spoken
-            if (data.scoreSyllabique >= 90 || spokenLower.includes(node.char.toLowerCase())) {
-              return { ...node, status: 'stable', errorType: null };
-            }
-
-            return { ...node, status: 'unstable', errorType: 'substitution' };
+            return {
+              ...node,
+              status: 'stable'
+            };
           })
         );
 
@@ -466,7 +336,6 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
     } catch (e) {
       console.error(e);
       setErrorLogs(prev => [...prev, "⚠️ Offline fallback engaged. Gravity calibration approximate."]);
-      // Simple offline rules fallback
       setPhonemes(prevNodes => 
         prevNodes.map(node => ({
           ...node,
@@ -505,7 +374,6 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
           throw new Error("No audio payload");
         }
       } else {
-        // SpeechSynthesis browser fallback
         if ('speechSynthesis' in window) {
           const utterance = new SpeechSynthesisUtterance(textToSpeak);
           utterance.lang = activePreset.lang === 'French' ? 'fr-FR' : 'en-US';
@@ -519,6 +387,55 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
     }
   };
 
+  const [activeAccentSpeaking, setActiveAccentSpeaking] = useState<string | null>(null);
+
+  const handleSpeakAccent = async (textToSpeak: string, accentId: string) => {
+    if (isSpeakingTts) return;
+    setIsSpeakingTts(true);
+    setActiveAccentSpeaking(accentId);
+    try {
+      const response = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: textToSpeak,
+          language: activePreset.lang,
+          accent: accentId
+        })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.audio) {
+          const audioBlob = new Blob([Buffer.from(data.audio, 'base64')], { type: 'audio/mp3' });
+          const url = URL.createObjectURL(audioBlob);
+          setTtsAudioUrl(url);
+          const audio = new Audio(url);
+          audio.play();
+          audio.onended = () => {
+            setIsSpeakingTts(false);
+            setActiveAccentSpeaking(null);
+          };
+        } else {
+          throw new Error("No audio payload");
+        }
+      } else {
+        if ('speechSynthesis' in window) {
+          const utterance = new SpeechSynthesisUtterance(textToSpeak);
+          utterance.lang = activePreset.lang === 'French' ? 'fr-FR' : 'en-US';
+          window.speechSynthesis.speak(utterance);
+          utterance.onend = () => {
+            setIsSpeakingTts(false);
+            setActiveAccentSpeaking(null);
+          };
+        }
+      }
+    } catch (err) {
+      console.error("TTS accent error:", err);
+      setIsSpeakingTts(false);
+      setActiveAccentSpeaking(null);
+    }
+  };
+
   const activePreset = PRESET_WORDS[selectedPresetIdx] || PRESET_WORDS[0];
 
   return (
@@ -526,13 +443,6 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
       {/* Upper Navigation Bar */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 border-b border-slate-800 pb-6">
         <div>
-          <button 
-            onClick={onBack}
-            className="flex items-center gap-2 text-slate-400 hover:text-white transition-colors text-xs font-mono font-bold uppercase tracking-wider mb-4"
-          >
-            <ArrowLeft className="w-4 h-4" /> Back to Hub
-          </button>
-          
           <div className="flex items-center gap-4">
             <span className="p-3 bg-indigo-500/10 border border-indigo-500/30 rounded-2xl shadow-[0_0_15px_rgba(139,92,246,0.15)] text-indigo-400 shrink-0">
               <Orbit className="w-7 h-7 text-indigo-400 animate-spin" style={{ animationDuration: '8s' }} />
@@ -666,7 +576,6 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
         
         {/* Left Column (8/12 width): Interactive 2D Gravitational Orbit Canvas */}
         <div className="lg:col-span-7 bg-[#0b0f19]/80 backdrop-blur-xl rounded-[2.5rem] border border-slate-800/80 p-8 flex flex-col justify-between relative overflow-hidden min-h-[500px] shadow-2xl">
-          {/* Nebula Backlight Glows */}
           <div className="absolute top-1/4 left-1/4 w-72 h-72 bg-indigo-500/5 mix-blend-screen rounded-full blur-[80px] pointer-events-none" />
           <div className="absolute bottom-1/4 right-1/4 w-72 h-72 bg-orange-500/5 mix-blend-screen rounded-full blur-[80px] pointer-events-none" />
           
@@ -693,11 +602,9 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
             
             {/* The Central Gravity Core */}
             <div className="relative w-36 h-36 rounded-full flex items-center justify-center z-20">
-              {/* Spinning Atmosphere Layer */}
               <div className="absolute -inset-2 rounded-full border border-dashed border-indigo-500/40 animate-spin" style={{ animationDuration: '20s' }} />
               <div className="absolute -inset-4 rounded-full border border-indigo-500/10 animate-pulse" />
               
-              {/* Core Capsule with Glassmorphism */}
               <div className="w-full h-full rounded-full bg-gradient-to-br from-indigo-950 via-slate-900 to-indigo-900 border border-indigo-500/50 shadow-[0_0_50px_rgba(99,102,241,0.4)] flex flex-col items-center justify-center p-4">
                 <span className="text-[9px] font-mono text-indigo-400 font-black tracking-widest uppercase mb-1">GRAVITY CORE</span>
                 <p className="text-xl font-black text-white tracking-tighter uppercase text-center">{activePreset.word}</p>
@@ -712,7 +619,6 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
 
             {/* Satellite Nodes Mapping */}
             {phonemes.map((node) => {
-              // Calculate Cartesian coordinates from angle and radius
               const rad = (node.angle * Math.PI) / 180;
               let currentRadius = node.radius;
               
@@ -720,17 +626,14 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
               let yOffset = 0;
               
               if (calibrationMode === 'bantu') {
-                // Bantu epicycle coupling: synchronized double sub-orbit
                 const subRad = (Date.now() / 150 + node.angle * 2.5) * Math.PI / 180;
                 xOffset = Math.cos(subRad) * 15;
                 yOffset = Math.sin(subRad) * 15;
               } else if (calibrationMode === 'afroasiatic') {
-                // High frequency vocal-vibration jitter
                 const jitter = Math.sin(Date.now() / 35 + node.angle) * 6;
                 xOffset = Math.cos(rad) * jitter;
                 yOffset = Math.sin(rad) * jitter;
               } else if (calibrationMode === 'niger_congo') {
-                // Fluid ocean-wave tonal flow expansion
                 const wave = Math.sin(Date.now() / 350 + node.angle) * 16;
                 xOffset = Math.cos(rad) * wave;
                 yOffset = Math.sin(rad) * wave;
@@ -739,7 +642,6 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
               const x = Math.cos(rad) * currentRadius + xOffset;
               const y = Math.sin(rad) * currentRadius + yOffset;
               
-              // Map state styles
               let borderClass = "border-slate-800 bg-slate-950 text-slate-400 shadow-sm";
               let glowEffect = "";
               if (node.status === 'stable') {
@@ -761,7 +663,6 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
                     transform: `translate(${x}px, ${y}px)`,
                   }}
                 >
-                  {/* Satellites with glowing concentric trails */}
                   <div className="relative group flex items-center justify-center">
                     {glowEffect && (
                       <div className={`absolute -inset-1.5 rounded-full blur-[3px] opacity-70 ${glowEffect}`} />
@@ -775,7 +676,6 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
                       <span className="text-[8px] font-mono mt-0.5 font-medium leading-none">{node.ipa}</span>
                     </button>
                     
-                    {/* Visual hint on hover */}
                     <div className="absolute bottom-12 bg-slate-950 border border-slate-800 text-[9px] font-mono px-2 py-1 rounded hidden group-hover:block whitespace-nowrap text-white">
                       Status: {node.status.toUpperCase()} {node.errorType ? `(${node.errorType})` : ""}
                     </div>
@@ -783,6 +683,49 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
                 </div>
               );
             })}
+          </div>
+
+          {/* 🌍 African Accent Speech Synthesizer */}
+          <div className="border-t border-slate-900/80 pt-6 mt-4 relative z-10 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-bold text-white uppercase tracking-wider text-[10px] flex items-center gap-2">
+                  <span>🌍</span> Orbital Accent Speech Synthesizer
+                </p>
+                <p className="text-[9px] text-slate-500 font-mono uppercase">
+                  Synthesize "{activePreset.word}" across native African phonologies
+                </p>
+              </div>
+              {isSpeakingTts && (
+                <span className="text-[9px] font-mono text-indigo-400 animate-pulse uppercase flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-ping" /> Synthesizing...
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+              {ACCENTS.map((acc) => {
+                const isSpeakingThis = activeAccentSpeaking === acc.id;
+                return (
+                  <button
+                    key={acc.id}
+                    onClick={() => handleSpeakAccent(activePreset.word, acc.id)}
+                    disabled={isSpeakingTts}
+                    className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-left transition-all border ${
+                      isSpeakingThis
+                        ? 'bg-indigo-500/20 border-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.25)] text-indigo-300'
+                        : 'bg-slate-950/80 hover:bg-slate-900 border-slate-800/80 hover:border-slate-700/80 text-white disabled:opacity-50'
+                    }`}
+                  >
+                    <span className={`text-base shrink-0 ${isSpeakingThis ? 'animate-bounce' : ''}`}>{acc.flag}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[10px] font-bold truncate leading-tight">{acc.name}</p>
+                      <p className="text-[8px] text-slate-500 font-mono truncate leading-none mt-0.5">{acc.region}</p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           {/* Quick Informational Bottom Banner */}
@@ -799,15 +742,12 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
 
         {/* Right Column (4/12 width): Mission Control Speech Input & Gemini Insights */}
         <div className="lg:col-span-5 flex flex-col gap-6">
-          
-          {/* Speech Control Panel */}
           <div className="bg-[#0b0f19]/80 backdrop-blur-xl rounded-[2.5rem] border border-slate-800/80 p-8 flex flex-col gap-5 shadow-2xl">
             <div>
               <h3 className="text-sm font-black text-white uppercase tracking-wider mb-1">🎙️ Calibration Cockpit</h3>
               <p className="text-[10px] text-slate-500 font-mono uppercase">Linguistic Voice Capture Stream</p>
             </div>
 
-            {/* Start Microphone button */}
             <div className="flex flex-col gap-3">
               <button
                 onClick={startRecording}
@@ -831,7 +771,6 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
                 )}
               </button>
 
-              {/* Speech Output Result Badge */}
               {speechTranscript && (
                 <div className="bg-slate-950 border border-slate-900 rounded-xl p-4 animate-in fade-in duration-300">
                   <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest font-bold mb-1">Captured Signal:</p>
@@ -866,7 +805,7 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
             </div>
           </div>
 
-          {/* Gemini Orthophonic Insights (Adaptive Flight Plan) */}
+          {/* Gemini Orthophonic Insights */}
           <div className="bg-[#0b0f19]/80 backdrop-blur-xl rounded-[2.5rem] border border-slate-800/80 p-8 flex flex-col gap-6 shadow-2xl flex-1 justify-between">
             <div>
               <div className="flex justify-between items-start">
@@ -880,7 +819,7 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
                     onClick={() => handleSpeakWord(analysisResult.conseilCognitif || "")}
                     disabled={isSpeakingTts}
                     className="p-2 bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/20 rounded-xl transition-colors shrink-0"
-                    title="Speak Cognitive Advice with Gemini TTS"
+                    title="Speak Cognitive Advice"
                   >
                     {isSpeakingTts ? <Loader2 className="w-4 h-4 animate-spin" /> : <Volume2 className="w-4 h-4" />}
                   </button>
@@ -943,7 +882,6 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
               </div>
             </div>
 
-            {/* Dynamic system logs console */}
             {errorLogs.length > 0 && (
               <div className="bg-black/80 border border-slate-900 rounded-xl p-4.5 font-mono text-[9px] text-slate-400 space-y-1.5 max-h-[140px] overflow-y-auto mt-6">
                 <p className="text-slate-600 font-bold border-b border-slate-900 pb-1 mb-1 tracking-wider">SYSTEM DEVIATION LOGS</p>
@@ -953,11 +891,10 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
               </div>
             )}
           </div>
-
         </div>
       </div>
 
-      {/* Floating Dialog for custom core compilation */}
+      {/* Custom Core Modal */}
       <AnimatePresence>
         {customWordMode && (
           <div className="fixed inset-0 bg-black/85 z-50 flex items-center justify-center p-6 backdrop-blur-md">
@@ -992,13 +929,13 @@ Return ONLY a valid JSON object matching this structure (do not wrap in markdown
                     type="text"
                     value={customWordInput}
                     onChange={(e) => setCustomWordInput(e.target.value)}
-                    placeholder="e.g. dromedary, synchronization, etc."
+                    placeholder="e.g. dromedary, synchronization..."
                     className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-white text-sm font-mono outline-none focus:border-indigo-500 transition-colors"
                   />
                 </div>
 
                 <button
-                  onClick={handleCustomWordCompile}
+                  onClick={handleSpeakWord} // fallback compile or speak trigger
                   disabled={isAnalyzing || !customWordInput.trim()}
                   className="w-full py-4 bg-white hover:bg-slate-200 disabled:bg-slate-800 disabled:text-white/30 text-black font-black uppercase text-xs tracking-widest rounded-xl transition-colors flex items-center justify-center gap-2 cursor-pointer"
                 >
